@@ -21,7 +21,7 @@ pip install git+https://github.com/kamo-naoyuki/pytorch_complex
 python train.py data/train
 ```
 
-## Apply WPE to your wpe
+## Apply WPE to your data
 
 
 ```bash
