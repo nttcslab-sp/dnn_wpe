@@ -108,12 +108,14 @@ def get_correlations(Y: ComplexTensor, inverse_power: torch.Tensor,
 
 
 def get_filter_matrix_conj(correlation_matrix: ComplexTensor,
-                           correlation_vector: ComplexTensor) -> ComplexTensor:
+                           correlation_vector: ComplexTensor,
+                           eps: float = 1e-10) -> ComplexTensor:
     """Calculate (conjugate) filter matrix based on correlations for one freq.
 
     Args:
         correlation_matrix : Correlation matrix (F, taps * C, taps * C)
         correlation_vector : Correlation vector (F, taps, C, C)
+        eps:
 
     Returns:
         filter_matrix_conj (ComplexTensor): (F, taps, C, C)
@@ -124,6 +126,14 @@ def get_filter_matrix_conj(correlation_matrix: ComplexTensor,
     correlation_vector = \
         correlation_vector.permute(0, 2, 1, 3)\
         .contiguous().view(F, C, taps * C)
+
+    eye = torch.eye(correlation_matrix.size(-1),
+                    dtype=correlation_matrix.dtype,
+                    device=correlation_matrix.device)
+    shape = tuple(1 for _ in range(correlation_matrix.dim() - 2)) + \
+        correlation_matrix.shape[-2:]
+    eye = eye.view(*shape)
+    correlation_matrix += eps * eye
 
     inv_correlation_matrix = correlation_matrix.inverse()
     # (F, C, taps, C) x (F, taps * C, taps * C) -> (F, C, taps * C)

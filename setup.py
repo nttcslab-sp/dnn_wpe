@@ -8,7 +8,7 @@ setup(name='pytorch_wpe',
       author_email='',
       url='',
       packages=['pytorch_wpe'],
-      install_requires=['numpy', 'torch'],
-      setup_requires=['pytest-runner'],
-      tests_require=['pytest-cov', 'pytest-html', 'pytest']
+      install_requires=['numpy'],
+      setup_requires=[],
+      tests_require=[]
       )

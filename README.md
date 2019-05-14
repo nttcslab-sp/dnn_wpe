@@ -1,18 +1,31 @@
 # DNN based Weighted Prediction Error
 ## Install 
 
-Requires pytorch>=1.0: See https://pytorch.org/get-started/locally
+### Install PyTorch Version WPE
+
+The followings are requirements.
+
+- Python>=3.6
+- pytorch>=1.0: See https://pytorch.org/get-started/locally
+
 
 ```bash
-python setup.py install
+conda install pytorch cudatoolkit=10.0 -c pytorch
 pip install git+https://github.com/kamo-naoyuki/pytorch_complex
+pip install ${REPOSITORY_ROOT}
+```
+
+### Install modules to run the example
+```bash
+export PATHON_PATH=${REPOSITORY_ROOT}/example:${PATHON_PATH}
+pip install -r example/requirements.txt
 ```
 
 ## How to use
 
-### Prepare dataset
+### Prepare REVERB challenge dataset
 ```bash
-./data.sh ${REVERB_ROOT} data/
+./prepare_REVERB_data.sh ${REVERB_CHANLLENGE} data/
 ```
 
 ### Training

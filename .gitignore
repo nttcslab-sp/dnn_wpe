@@ -1,0 +1,44 @@
+# Python
+*.pyc
+*.pyd
+__pycache__
+*.egg-info
+.eggs
+dist
+build
+
+# PyCharm
+.idea
+
+# Editor temporaries
+*.swn
+*.swo
+*.swp
+*~
+.~lock*
+
+# Compiled
+*.a
+*.so
+*.o
+
+# NFS
+.nfs*
+
+# Some binaries
+*.wav
+*.flac
+*.sv1
+*.png
+*.txt
+*.log
+
+# Archive
+*.tar.gz
+*.tgz
+*.zip
+*.tar
+
+# Production
+example/exp/
+example/data/
