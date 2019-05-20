@@ -1,5 +1,5 @@
 # DNN based Weighted Prediction Error
-## Install 
+## Install
 
 ### Install PyTorch Version WPE
 
@@ -15,32 +15,9 @@ pip install git+https://github.com/kamo-naoyuki/pytorch_complex
 pip install ${REPOSITORY_ROOT}
 ```
 
-### Install modules to run the example
-```bash
-export PATHON_PATH=${REPOSITORY_ROOT}/example:${PATHON_PATH}
-pip install -r example/requirements.txt
-```
+## Examples
 
-## How to use
-
-### Prepare REVERB challenge dataset
-```bash
-./prepare_REVERB_data.sh ${REVERB_CHANLLENGE} data/
-```
-
-### Training
-
-```bash
-python train.py data/train
-```
-
-## Apply WPE to your data
-
-
-```bash
-python decode.py data/eval/wav.list
-```
-
+WIP
 
 # Reference
 
