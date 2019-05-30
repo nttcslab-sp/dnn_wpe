@@ -6,6 +6,7 @@ __pycache__
 .eggs
 dist
 build
+.ipynb_checkpoints
 
 # PyCharm
 .idea
@@ -28,7 +29,7 @@ build
 # Some binaries
 *.wav
 *.flac
-*.sv1
+*.wv1
 *.png
 *.txt
 *.log
@@ -40,5 +41,5 @@ build
 *.tar
 
 # Production
-example/exp/
+example/exp*
 example/data/

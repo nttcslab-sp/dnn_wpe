@@ -1,16 +1,19 @@
-from typing import Sequence
+from typing import Sequence, Tuple, Optional
 
 import torch
 from torch.nn.utils.rnn import pack_padded_sequence
+from torch.nn.utils.rnn import pad_sequence
 from torch.nn.utils.rnn import pad_packed_sequence
 from torch_complex.tensor import ComplexTensor
 
-from pytorch_wpe.wpe import wpe_one_iteration
+from pytorch_wpe import wpe_one_iteration
 
 
 class DNN_WPE(torch.nn.Module):
     def __init__(self,
-                 model_type: str = 'blstm', feat_type: str = 'amplitude',
+                 model_type: str = 'blstm',
+                 feat_type: str = 'log_power',
+                 out_type: str = 'mask',
                  input_size: int = 257, hidden_size: int = 300,
                  num_layers: int = 2, nchannel: int = 8,
                  channel_independent: bool = True,
@@ -25,6 +28,10 @@ class DNN_WPE(torch.nn.Module):
         self.normalization = normalization
         self.use_dnn = use_dnn
         self.inverse_power = True
+        if out_type is None:
+            self.out_type = feat_type
+        else:
+            self.out_type = out_type
 
         if use_dnn:
             self.estimator = Estimator(
@@ -36,7 +43,12 @@ class DNN_WPE(torch.nn.Module):
             self.estimator = None
 
     def forward(self,
-                data: ComplexTensor, ilens: torch.LongTensor) -> ComplexTensor:
+                data: ComplexTensor, ilens: torch.LongTensor=None,
+                return_wpe: bool=True) -> Tuple[Optional[ComplexTensor],
+                                                torch.Tensor]:
+        if ilens is None:
+            ilens = torch.full((data.size(0),), data.size(2),
+                               dtype=torch.long, device=data.device)
         # data: (B, C, T, F), ilens: (B,)
         enhanced = data
         power = None
@@ -49,7 +61,22 @@ class DNN_WPE(torch.nn.Module):
                 if self.normalization:
                     # Normalize along T
                     mask = mask / mask.sum(dim=-2)[..., None]
-                power = power * mask
+                if self.out_type == 'mask':
+                    power = power * mask
+                else:
+                    power = mask
+
+                    if self.out_type == 'amplitude':
+                        power = power ** 2
+                    elif self.out_type == 'log_power':
+                        power = power.exp()
+                    elif self.out_type == 'power':
+                        pass
+                    else:
+                        raise NotImplementedError(self.out_type)
+
+            if not return_wpe:
+                return None, power
 
             # power: (B, C, T, F) -> _power: (B, F, T)
             _power = power.mean(dim=1).transpose(-1, -2).contiguous()
@@ -57,11 +84,22 @@ class DNN_WPE(torch.nn.Module):
             # data: (B, C, T, F) -> _data: (B, F, C, T)
             _data = data.permute(0, 3, 1, 2).contiguous()
             # _enhanced: (B, F, C, T)
-            _enhanced = wpe_one_iteration(
-                _data, _power,
-                taps=self.taps, delay=self.delay,
-                inverse_power=self.inverse_power)
-            _enhanced.masked_fill(make_pad_mask(ilens, _enhanced.real, -1), 0)
+            _enhanced_real = []
+            _enhanced_imag = []
+            for d, p, l in zip(_data, _power, ilens):
+                # e: (F, C, T) -> (T, C, F)
+                e = wpe_one_iteration(
+                    d[..., :l], p[..., :l],
+                    taps=self.taps, delay=self.delay,
+                    inverse_power=self.inverse_power).transpose(0, 2)
+                _enhanced_real.append(e.real)
+                _enhanced_imag.append(e.imag)
+            # _enhanced: B x (T, C, F) -> (B, T, C, F) -> (B, F, C, T)
+            _enhanced_real = pad_sequence(_enhanced_real,
+                                          batch_first=True).transpose(1, 3)
+            _enhanced_imag = pad_sequence(_enhanced_imag,
+                                          batch_first=True).transpose(1, 3)
+            _enhanced = ComplexTensor(_enhanced_real, _enhanced_imag)
 
             # enhanced: (B, F, C, T) -> (B, C, T, F)
             enhanced = _enhanced.permute(0, 2, 3, 1)
@@ -234,7 +272,7 @@ class Estimator(torch.nn.Module):
                 xs = xs.transpose(2, 3).contiguous().view(
                     -1, C, xs.size(3), xs.size(2))
             else:
-                # xs: (B, C, F, T) -> xs: (B, C, F, T)
+                # xs: (B, C, T, F) -> xs: (B, C, T, F)
                 xs = self.net(xs)
         else:
             raise NotImplementedError(f'Not implemented: {self.model_type}')

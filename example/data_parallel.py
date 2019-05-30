@@ -76,12 +76,14 @@ class MyDataParallel(torch.nn.DataParallel):
         inputs = scatter(inputs, device_ids, dim) if inputs else []
         kwargs = scatter(kwargs, device_ids, dim) if kwargs else []
 
-        if len(inputs) < len(kwargs):
-            inputs.extend([() for _ in range(len(kwargs) - len(inputs))])
-        elif len(kwargs) < len(inputs):
-            kwargs.extend([{} for _ in range(len(inputs) - len(kwargs))])
+        # if len(inputs) < len(kwargs):
+        #     inputs.extend([() for _ in range(len(kwargs) - len(inputs))])
+        # elif len(kwargs) < len(inputs):
+        #     kwargs.extend([{} for _ in range(len(inputs) - len(kwargs))])
         inputs = tuple(inputs)
         kwargs = tuple(kwargs)
+        inputs = inputs[:len(kwargs)]
+        kwargs = kwargs[:len(inputs)]
         return inputs, kwargs
 
     def gather(self, outputs, output_device):

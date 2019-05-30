@@ -4,3 +4,4 @@ soundfile
 sacred
 typeguard
 humanfriendly
+pystoi

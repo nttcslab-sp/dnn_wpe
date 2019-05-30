@@ -1,12 +1,17 @@
 import collections
 import json
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
 import scipy.signal
 import scipy.io.wavfile as scipy_wav
 import soundfile
+import torch
+from torch_complex.tensor import ComplexTensor
 from typeguard import check_argument_types
 
 
@@ -49,6 +54,10 @@ class Stft:
     @property
     def frame_length(self):
         return self.conf['frame_length']
+
+    @property
+    def fs(self):
+        return self.conf['fs']
 
     def __call__(self, x: np.ndarray, **kwargs):
         return self.stft(x, **kwargs)
@@ -177,3 +186,80 @@ def get_commandline_args():
             else '\'' + arg.replace('\'', '\'\\\'\'') + '\''
             for arg in sys.argv]
     return sys.executable + ' ' + ' '.join(argv)
+
+
+def to_recursively(vs, device, non_blocking=False):
+    if isinstance(vs, dict):
+        return {k: to_recursively(v, device, non_blocking)
+                for k, v in value.items()}
+    elif isinstance(vs, (list, tuple)):
+        return type(vs)(to_recursively(v, device, non_blocking) for v in vs)
+    else:
+        return vs.to(device, non_blocking=non_blocking) \
+            if isinstance(vs, (torch.Tensor, ComplexTensor)) else vs
+
+
+pesq_url = 'https://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-P.862-200102-I!!SOFT-ZST-E&type=items'
+
+
+def calc_pesq(ref: np.ndarray, enh: np.ndarray, fs: int) -> float:
+    """Evaluate PESQ
+
+    PESQ program can be downloaded from here:
+        https://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-P.862-200102-I!!SOFT-ZST-E&type=items
+
+    Reference:
+        Perceptual evaluation of speech quality (PESQ)-a new method
+            for speech quality assessment of telephone networks and codecs
+        https://ieeexplore.ieee.org/document/941023
+
+    Args:
+        ref (np.ndarray): Reference (Nframe, Nmic)
+        enh (np.ndarray): Enhanced (Nframe, Nmic)
+        fs (int): Sample frequency
+    """
+    if shutil.which('PESQ') is None:
+        raise RuntimeError(
+            f"Please download from '{pesq_url}' and compile it as PESQ")
+    if fs not in (8000, 16000):
+        raise ValueError(f'Sample frequency must be 8000 or 16000: {fs}')
+    if ref.shape != enh.shape:
+        raise ValueError(f'ref and enh should have the same shape: '
+                         f'{ref.shape} != {enh.shape}')
+    if ref.ndim == 1:
+        ref = ref[:, None]
+        enh = enh[:, None]
+
+    n_mic = ref.shape[1]
+    with tempfile.TemporaryDirectory() as d:
+        refs = []
+        enhs = []
+        for imic in range(n_mic):
+            wv = str(Path(d) / f'ref.{imic}.wav')
+            scipy_wav.write(wv, fs, ref[:, imic].astype(np.int16))
+            refs.append(wv)
+
+            wv = str(Path(d) / f'enh.{imic}.wav')
+            scipy_wav.write(wv, fs, enh[:, imic].astype(np.int16))
+            enhs.append(wv)
+
+        lis = []
+        for imic in range(n_mic):
+            # PESQ +<8000|16000> <ref.wav> <enh.wav> [smos] [cond]
+            commands = ['PESQ', '+{}'.format(fs),
+                        refs[imic], enhs[imic]]
+            with subprocess.Popen(
+                    commands, stdout=subprocess.DEVNULL, cwd=d) as p:
+                _, _ = p.communicate()
+
+            # _pesq_results.txt: e.g.
+            #   DEGRADED	 PESQMOS	 SUBJMOS	 COND	 SAMPLE_FREQ	 CRUDE_DELAY
+            #   enh.0.wav	 2.219	 0.000	 0	 16000	-0.0080
+            result_txt = (Path(d) / '_pesq_results.txt')
+            if result_txt.exists():
+                with result_txt.open('r') as f:
+                    lis.append(float(f.readlines()[1].split()[1]))
+            else:
+                # Sometimes PESQ is failed. I don't know why.
+                lis.append(1.)
+        return float(np.mean(lis))
