@@ -18,7 +18,7 @@ contains training of DNN, test of DNN-WPE based on REVERB challenge data.
 
 ```bash
 pip install git+https://github.com/kamo-naoyuki/pytorch_complex
-pip install ${REPOSITORY_ROOT}
+pip install git+https://github.com/nttcslab-sp/dnn_wpe
 ```
 
 ## Example of DNN training
