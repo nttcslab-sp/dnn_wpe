@@ -39,4 +39,4 @@ Comming soon
 ## Reference
 
 - [1]: Neural network-based spectrum estimation for online WPE dereverberation; K. Kinoshita et al.. 2017; https://pdfs.semanticscholar.org/f156/c1b463ad2b41c65220e09aa40e970be271d8.pdf
-- [2]: https://github.com/fgnt/nara_wpe
+- \[2\]: https://github.com/fgnt/nara_wpe
