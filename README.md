@@ -1,9 +1,9 @@
 # PyTorch version Weighted Prediction Error
 
-The WPE implementation using PyTorch.
+A WPE implementation using PyTorch.
 Note that this module is aimed at doing experiments using WPE in DNN computational graph,
-and the implementation is not efficient,
-so maybe the computation is very slowly and uses much memory.
+and we didn't optimize the implementation efficiently,
+so maybe the computation is very slow and it uses much memory.
 
 ## Install
 ### Requirements
