@@ -1,5 +1,5 @@
 {"window": "hann",
  "frame_length": 512,
- "frame_shift": 256,
+ "frame_shift": 128,
  "nfft": 512,
  "fs": 16000}

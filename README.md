@@ -1,24 +1,39 @@
-# DNN based Weighted Prediction Error
+# PyTorch version Weighted Prediction Error
+
+The WPE implementation using PyTorch.
+Note that this module is aimed at doing experiments using WPE in DNN computational graph,
+and the implementation is not efficient,
+so maybe the computation is very slowly and uses much memory.
+
 ## Install
-
-### Install PyTorch Version WPE
-
-The followings are requirements.
+### Requirements
 
 - Python>=3.6
 - pytorch>=1.0: See https://pytorch.org/get-started/locally
 
 
+### Install PyTorch Version WPE
+
 ```bash
-conda install pytorch cudatoolkit=10.0 -c pytorch
 pip install git+https://github.com/kamo-naoyuki/pytorch_complex
 pip install ${REPOSITORY_ROOT}
 ```
 
 ## Examples
 
-WIP
+```bash
+cd example
+./prepare_REVERB_data.sh <wsjcam0> <REVERB_DATA_OFFICIAL>
+source env.sh
+./train.py
+```
 
-# Reference
+## RESULTS
+Comming soon
+### Setup
+- Kadi: 9bf0b6d8db68be01f7036018ca0cdbea31e05d7b
+- Using The chain acoustic-model of REVERB Challege recipe.
 
-[1]: The DNN based spectrogram estimation for WPE was proposed by Neural network-based spectrum estimation for online WPE dereverberation; K. Kinoshita et al.. 2017; https://pdfs.semanticscholar.org/f156/c1b463ad2b41c65220e09aa40e970be271d8.pdf
+## Reference
+
+[1]: Neural network-based spectrum estimation for online WPE dereverberation; K. Kinoshita et al.. 2017; https://pdfs.semanticscholar.org/f156/c1b463ad2b41c65220e09aa40e970be271d8.pdf

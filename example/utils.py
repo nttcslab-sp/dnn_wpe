@@ -199,14 +199,12 @@ def to_recursively(vs, device, non_blocking=False):
             if isinstance(vs, (torch.Tensor, ComplexTensor)) else vs
 
 
-pesq_url = 'https://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-P.862-200102-I!!SOFT-ZST-E&type=items'
+pesq_url = 'http://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-P.862-200511-I!Amd2!SOFT-ZST-E&type=items'
 
 
-def calc_pesq(ref: np.ndarray, enh: np.ndarray, fs: int) -> float:
+def calc_pesq(ref: np.ndarray, enh: np.ndarray, fs: int,
+              wideband: bool = True) -> float:
     """Evaluate PESQ
-
-    PESQ program can be downloaded from here:
-        https://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-P.862-200102-I!!SOFT-ZST-E&type=items
 
     Reference:
         Perceptual evaluation of speech quality (PESQ)-a new method
@@ -217,6 +215,9 @@ def calc_pesq(ref: np.ndarray, enh: np.ndarray, fs: int) -> float:
         ref (np.ndarray): Reference (Nframe, Nmic)
         enh (np.ndarray): Enhanced (Nframe, Nmic)
         fs (int): Sample frequency
+        wideband (bool):  Default mode of operation is P.862
+            (narrowband handset listening). Select +wb
+             to use P.862.2 wideband extension (headphone listening).
     """
     if shutil.which('PESQ') is None:
         raise RuntimeError(
@@ -246,19 +247,22 @@ def calc_pesq(ref: np.ndarray, enh: np.ndarray, fs: int) -> float:
         lis = []
         for imic in range(n_mic):
             # PESQ +<8000|16000> <ref.wav> <enh.wav> [smos] [cond]
-            commands = ['PESQ', '+{}'.format(fs),
-                        refs[imic], enhs[imic]]
+            if wideband:
+                commands = ['PESQ', '+{}'.format(fs), '+wb',
+                            refs[imic], enhs[imic]]
+            else:
+                commands = ['PESQ', '+{}'.format(fs), refs[imic], enhs[imic]]
             with subprocess.Popen(
                     commands, stdout=subprocess.DEVNULL, cwd=d) as p:
                 _, _ = p.communicate()
 
-            # _pesq_results.txt: e.g.
-            #   DEGRADED	 PESQMOS	 SUBJMOS	 COND	 SAMPLE_FREQ	 CRUDE_DELAY
-            #   enh.0.wav	 2.219	 0.000	 0	 16000	-0.0080
-            result_txt = (Path(d) / '_pesq_results.txt')
+            # e.g.
+            # REFERENCE	 DEGRADED	 PESQMOS	 MOSLQO	 SAMPLE_FREQ	 MODE
+            # /tmp/tmp9k5rxgjd/ref.0.wav	 /tmp/tmp9k5rxgjd/enh.0.wav	 -1.000	 4.644	 16000	wb
+            result_txt = (Path(d) / 'pesq_results.txt')
             if result_txt.exists():
                 with result_txt.open('r') as f:
-                    lis.append(float(f.readlines()[1].split()[1]))
+                    lis.append(float(f.readlines()[1].split()[3]))
             else:
                 # Sometimes PESQ is failed. I don't know why.
                 lis.append(1.)

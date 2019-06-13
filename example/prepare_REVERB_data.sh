@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
-if [ $# -ne 0 ]; then
-    echo "$0: Error: Not supporting arguments"
+if [ $# -ne 2 ]; then
+    echo "Usage $0 <wsj_cam0> <REVERB_DATA_OFFICIAL>"
     exit 1
 fi
 if ! which sox &> /dev/null; then
@@ -10,19 +10,21 @@ if ! which sox &> /dev/null; then
 fi
 
 stage=0
-stop_stage=6
+stop_stage=1000000
 
-WSJ_CAM0=/data/rigel1/corpora/REVERB_DATA_OFFICIAL/wsjcam0
-REVERB_DATA_OFFICIAL=/data/rigel1/corpora/REVERB_DATA_OFFICIAL
+WSJ_CAM0=$1
+REVERB_DATA_OFFICIAL=$2
 dir=data
 
 if [ "${stage}" -le 0 ] && [ ${stop_stage} -ge 0 ]; then
     echo "$0: Stage0: Install PESQ"
 
-    wget -O data/downloads/P862.zip https://www.itu.int/rec/dologin_pub.asp\?lang\=e\&id\=T-REC-P.862-200102-I\!\!SOFT-ZST-E\&type\=items
+    wget -O data/downloads/P862.zip "http://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-P.862-200511-I!Amd2!SOFT-ZST-E&type=items"
     unzip data/downloads/P862.zip -d data/downloads
-    ( cd data/downloads/P862/Software/source; gcc -o PESQ *.c -lm; )
+    unzip "data/downloads/Software/P862_annex_A_2005_CD  wav final.zip" -d data/downloads
+    ( cd data/downloads/P862_annex_A_2005_CD/source/; gcc -o PESQ *.c -lm; )
 fi
+
 
 if [ "${stage}" -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     echo "$0: Stage1: Convert sph to wav format in WSJ_CAM0 training data"

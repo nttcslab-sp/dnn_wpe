@@ -1,13 +1,14 @@
 import collections
-from typing import Tuple, List, Union, Optional, Sequence
+from typing import Tuple, List, Union, Sequence
 
-import h5py
 import numpy
 import scipy.io.wavfile as scipy_wav
 import scipy.signal
 import torch
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader
 from torch_complex.tensor import ComplexTensor
+import torch_complex.functional as FC
 from typeguard import check_argument_types, typechecked
 
 from utils import SoundScpReader
@@ -32,7 +33,7 @@ class ScpScpDataset:
         return len(self.x_reader)
 
     def __getitem__(self, key: Union[str, int]) \
-            -> Tuple[str, numpy.ndarray, numpy.ndarray, None]:
+            -> Tuple[str, numpy.ndarray, numpy.ndarray]:
         if isinstance(key, int):
             key = self.keys[key]
 
@@ -69,27 +70,24 @@ class ScpScpDataset:
         # t_stft: (F, T) -> (T, F)
         t_stft = t_stft.transpose(0, 2, 1)
 
-        return key, x_stft, t_stft, None
+        return key, x_stft, t_stft
 
 
 class WavRIRNoiseDataset:
     def __init__(self, wav_rir_noise_scp: str, stft_conf: str = None,
-                 t_h5: str = None):
-        self.reader = WavRIRNoiseReader(wav_rir_noise_scp)
+                 norm_scale: bool = True, delay: int = 0):
+        self.reader = WavRIRNoiseReader(wav_rir_noise_scp,
+                                        norm_scale=norm_scale,
+                                        delay=delay)
         self.keys = list(self.reader.keys())
         self.stft_func = Stft(stft_conf)
-        self.t_h5 = t_h5
-        self.t_reader = None
 
     def __len__(self):
         return len(self.reader)
 
     @typechecked
     def __getitem__(self, key: Union[str, int]) \
-            -> Tuple[str, numpy.ndarray, numpy.ndarray, Optional[numpy.ndarray]]:
-        if self.t_reader is None and self.t_h5 is not None:
-            self.t_reader = h5py.File(self.t_h5, 'r')
-
+            -> Tuple[str, numpy.ndarray, numpy.ndarray]:
         if isinstance(key, int):
             key = self.keys[key]
 
@@ -111,12 +109,7 @@ class WavRIRNoiseDataset:
         x_stft = x_stft.transpose(0, 2, 1)
         # t_stft: (F, T) -> (T, F)
         t_stft = t_stft.transpose(0, 2, 1)
-
-        if self.t_reader is not None:
-            t_power_ideal = self.t_reader[key][()]
-            return key, x_stft, t_stft, t_power_ideal
-        else:
-            return key, x_stft, t_stft, None
+        return key, x_stft, t_stft
 
 
 class DescendingOrderedBatchSampler:
@@ -170,23 +163,20 @@ class CollateFuncWithDevice:
 
 
 @typechecked
-def collate_fn(data: Sequence[Tuple[str, numpy.ndarray, numpy.ndarray,
-                                    Optional[numpy.ndarray]]]) \
+def collate_fn(data: Sequence[Tuple[str, numpy.ndarray, numpy.ndarray]]) \
         -> Tuple[Tuple[str, ...], ComplexTensor, ComplexTensor,
-                 Optional[torch.Tensor], torch.LongTensor]:
+                 torch.LongTensor]:
 
     # Check shape:
-    for k, x, t, t2 in data:
+    for k, x, t in data:
         assert isinstance(k, str), type(k)
         # Expected: x: (C, T, F), t: (C, T, F)
         assert x.ndim == 3, x.shape
-        # assert x.shape == t.shape, (x.shape, t.shape)
-        # if t2 is not None:
-        #     # t2: (T, F)
-        #     assert x.shape[1:] == t2.shape, (x.shape, t2.shape)
+        assert x.shape == t.shape, (x.shape, t.shape)
+
 
     # Create input lengths
-    ilens = numpy.array([x.shape[-2] for k, x, t, t2 in data], dtype=numpy.long)
+    ilens = numpy.array([x.shape[-2] for k, x, t in data], dtype=numpy.long)
     ilens = torch.from_numpy(ilens)
 
     # Sort by the input length
@@ -195,11 +185,11 @@ def collate_fn(data: Sequence[Tuple[str, numpy.ndarray, numpy.ndarray,
 
     # From numpy to torch Tensor:
     # x: (C, T, F) -> (T, C, F)
-    xs_real = [torch.from_numpy(x.real).transpose(0, 1) for k, x, t, t2 in data]
-    xs_imag = [torch.from_numpy(x.imag).transpose(0, 1) for k, x, t, t2 in data]
+    xs_real = [torch.from_numpy(x.real).transpose(0, 1) for k, x, t in data]
+    xs_imag = [torch.from_numpy(x.imag).transpose(0, 1) for k, x, t in data]
     # t: (C, T, F) -> (T, C, F)
-    ts_real = [torch.from_numpy(t.real).transpose(0, 1) for k, x, t, t2 in data]
-    ts_imag = [torch.from_numpy(t.imag).transpose(0, 1) for k, x, t, t2 in data]
+    ts_real = [torch.from_numpy(t.real).transpose(0, 1) for k, x, t in data]
+    ts_imag = [torch.from_numpy(t.imag).transpose(0, 1) for k, x, t in data]
 
     # Zero padding
     # xs: B x (T, C, F) -> (B, T, C, F) -> (B, C, T, F)
@@ -212,17 +202,70 @@ def collate_fn(data: Sequence[Tuple[str, numpy.ndarray, numpy.ndarray,
     xs = ComplexTensor(xs_real, xs_imag)
     ts = ComplexTensor(ts_real, ts_imag)
 
-    ks = tuple(k for k, x, t, t2 in data)
-
     # xs: (B, C, T, F), ts: (B, C, T, F), ilens: (B,)
-    if data[0][3] is not None:
-        # t_power_ideal : (T, F)
-        t_power_ideal = [torch.from_numpy(t2) for k, x, t, t2 in data]
-        # ts_power_ideal : (B, T, F)
-        ts_power_ideal = pad_sequence(t_power_ideal, batch_first=True)
-        return ks, xs, ts, ts_power_ideal, ilens
-    else:
-        return ks, xs, ts, None, ilens
+    ks = tuple(k for k, x, t in data)
+    return ks, xs, ts, ilens
+
+
+class Chunk:
+    def __init__(self, dataloader: DataLoader, batch_size: int,
+                 width: int = 40,
+                 lcontext: int = 4, rcontext: int = 4):
+        self.dataloader = dataloader
+        self.batch_size = batch_size
+        self.width = width
+        self.lcontext = lcontext
+        self.rcontext = rcontext
+
+    def __iter__(self):
+        _ks = []
+        _xs = []
+        _ts = []
+        _ilens = []
+
+        for ks, xs, ts, ilens in self.dataloader:
+            assert len(ks) == 1, \
+                f'batch-size of dataloder is not 1: {len(ks)} != 1'
+            # Check shape:
+            assert isinstance(ks[0], str), type(ks[0])
+            # Expected: x: ( C, T, F), t: (C, T, F)
+            assert xs[0].dim() == 3, xs[0].shape
+            assert xs[0].shape == ts[0].shape, (xs[0].shape, ts[0].shape)
+
+            offset = 0
+            while True:
+                ilen = ilens[0]
+                if offset + self.width > ilen:
+                    break
+
+                _k = ks[0]
+                _x = xs[0, :,
+                        max(offset - self.lcontext, 0):offset + self.width + self.rcontext, :]
+                if _x.shape[1] < self.width + self.lcontext + self.rcontext:
+                    lp = max(0, self.lcontext - offset)
+                    rp = max(offset + self.width + self.rcontext - xs.size(2), 0)
+                    _x = FC.pad(_x, (0, 0, rp, lp, 0, 0), mode='constant')
+
+                # _t: (C, width, F)
+                _t = ts[0, :, offset:offset + self.width, :]
+                _l = self.width + self.lcontext + self.rcontext
+
+                _ks.append(_k)
+                _xs.append(_x)
+                _ts.append(_t)
+                _ilens.append(_l)
+                offset += self.width
+
+                if len(_ks) == self.batch_size:
+                    _ks = tuple(_ks)
+                    # _x: (C, width, context, F)
+                    yield _ks, FC.stack(_xs), \
+                        FC.stack(_ts), torch.tensor(_ilens, device=_xs[0].device)
+
+                    _ks = []
+                    _xs = []
+                    _ts = []
+                    _ilens = []
 
 
 class RIRandNoisePairing:
@@ -287,7 +330,9 @@ def paring_wav_rir_noise(wav_scp, rir_list: str, noise_list: str,
 
 
 class WavRIRNoiseReader:
-    def __init__(self, wav_rir_noise_scp: str, predelay_ms: float=50):
+    def __init__(self, wav_rir_noise_scp: str, predelay_ms: float=50,
+                 norm_scale: bool=True,
+                 delay=0):
         # wav_rir_noise_scp can be created by paring_wav_rir_noise
         with open(wav_rir_noise_scp, 'r') as f:
             self.id2paths = {}
@@ -298,6 +343,8 @@ class WavRIRNoiseReader:
 
         self._keys = tuple(self.id2paths)
         self.predelay_ms = predelay_ms
+        self.delay = delay
+        self.norm_scale = norm_scale
 
     def __len__(self):
         return len(self._keys)
@@ -359,13 +406,16 @@ class WavRIRNoiseReader:
                  numpy.sqrt((noise ** 2).mean()) *
                  10 ** (-snrdb / 20))
 
-        reverb = reverb + noise
-        # direct = direct + noise
-        direct = direct
-        max_amp = max(reverb.max(), direct.max())
-        if max_amp > 1.:
-            reverb *= 1. / max_amp
-            direct *= 1. / max_amp
+        if self.delay != 0:
+            reverb = reverb[:, self.delay:] + noise[:, self.delay:]
+            direct = direct[:, :-self.delay] + noise[:, :-self.delay]
+        else:
+            reverb = reverb + noise
+            direct = direct + noise
 
-        return reverb[:, dt:].T, speech[:, None]
+        if self.norm_scale:
+            m = numpy.abs(reverb).mean()
+            reverb /= m
+            direct /= m
+
         return reverb.T, direct.T

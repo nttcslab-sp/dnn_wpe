@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import json
 import logging
 import os
 import random
@@ -25,7 +26,7 @@ from pytorch_wpe import wpe
 from data_parallel import MyDataParallel
 from dataset import \
     (WavRIRNoiseDataset, DescendingOrderedBatchSampler,
-     collate_fn, ScpScpDataset)
+     collate_fn, ScpScpDataset, Chunk)
 from model import DNN_WPE
 from utils import get_commandline_args, Stft, calc_pesq
 
@@ -73,13 +74,13 @@ class Reporter:
         return mean
 
 
-def nmse_loss(input, target):
+def mse_loss(input, target):
     """Normalized Mean Squared Error"""
     assert check_argument_types()
     assert input.shape == target.shape, (input.shape, target.shape)
 
-    # loss = torch.norm(input - target) ** 2 / torch.norm(target) ** 2
-    loss = torch.nn.functional.mse_loss(input,  target)
+    loss = torch.norm(input - target) ** 2 / torch.norm(target) ** 2
+    # loss = torch.nn.functional.mse_loss(input,  target)
     return loss
 
 
@@ -102,24 +103,23 @@ def unpad(x: torch.Tensor, ilens: torch.LongTensor,
 
 class LossCalculator(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, stft_conf: str = None,
+                 lcontext: int=4,
+                 rcontext: int=4,
                  pesq_nworker: int = 1):
         super().__init__()
         self.model = model
         self.stft_func = Stft(stft_conf)
         self.pesq_nworker = pesq_nworker
+        self.lcontext = lcontext
+        self.rcontext = rcontext
 
     def forward(self, xs: ComplexTensor, ts: ComplexTensor,
-                ts_power_ideal: Optional[torch.Tensor],
                 ilens: torch.LongTensor,
-                loss_types: Union[str, Sequence[str]]='power_nmse',
+                loss_types: Union[str, Sequence[str]]='power_mse',
                 ref_channel: int=0) -> Dict[str, torch.Tensor]:
         # xs: (B, C, T, F), ts: (B, T, F)
         if isinstance(loss_types, str):
             loss_types = [loss_types]
-        if ts_power_ideal is not None:
-            # ts_power_ideal: (B, T, F)
-            assert xs.shape[0] == ts_power_ideal.shape[0], (xs.shape, ts_power_ideal.shape)
-            # assert xs.shape[2:] == ts_power_ideal.shape[1:], (xs.shape, ts_power_ideal.shape)
 
         # ys: (B, C, T, F), power: (B, C, T, F)
         for loss_type in loss_types:
@@ -129,6 +129,10 @@ class LossCalculator(torch.nn.Module):
         else:
             return_wpe = False
         ys, power = self.model(xs, ilens, return_wpe=return_wpe)
+
+        r = -self.rcontext if self.rcontext != 0 else None
+        xs = xs[:, :, self.lcontext:r, :]
+
         if ys is not None:
             assert xs.shape == ys.shape, (xs.shape, ys.shape)
         assert xs.shape == power.shape, (xs.shape, power.shape)
@@ -136,15 +140,13 @@ class LossCalculator(torch.nn.Module):
         uts = None
         uys = None
         upower = None
-        upower_mean = None
-        uts_power_ideal = None
         ys_time = None
         ts_time = None
         xs_time = None
 
         loss_dict = OrderedDict()
         for loss_type in loss_types:
-            if loss_type == 'dnnwpe_power_nmse':
+            if loss_type == 'dnnwpe_power_mse':
                 if uys is None:
                     uys = FC.cat(unpad(ys, ilens, length_dim=2), dim=1)
                 if uts is None:
@@ -155,9 +157,9 @@ class LossCalculator(torch.nn.Module):
 
                 _ys = _ys.log()
                 _ts = _ts.log()
-                loss = nmse_loss(_ys, _ts)
+                loss = mse_loss(_ys, _ts)
                 
-            elif loss_type == 'dnnwpe_nmse':
+            elif loss_type == 'dnnwpe_mse':
                 if uys is None:
                     uys = FC.cat(unpad(ys, ilens, length_dim=2), dim=1)
                 if uts is None:
@@ -165,34 +167,19 @@ class LossCalculator(torch.nn.Module):
                     
                 _ys = torch.cat([uys.real, uys.imag], dim=-1)
                 _ts = torch.cat([uts.real, uts.imag], dim=-1)
-                loss = nmse_loss(_ys, _ts)
+                loss = mse_loss(_ys, _ts)
 
-            elif loss_type == 'power_nmse':
+            elif loss_type == 'power_mse':
                 if upower is None:
                     upower = torch.cat(unpad(power, ilens, length_dim=2), dim=1)
                 if uts is None:
                     uts = FC.cat(unpad(ts, ilens, length_dim=2), dim=1)
                     
                 _ts = uts.real ** 2 + uts.imag ** 2
-                _upower = upower.log()
-                _ts = _ts.log()
+                _upower = upower
+                _ts = _ts
 
-                loss = nmse_loss(_upower, _ts)
-
-            elif loss_type == 'ideal_power_nmse':
-                # _power: (B, T, F)
-                if upower_mean is None:
-                    power_mean = power.mean(1)
-                    upower_mean = torch.cat(
-                        unpad(power_mean, ilens, length_dim=1), dim=0)
-                if uts_power_ideal is None:
-                    # uts_power_ideal: (BT, F)
-                    uts_power_ideal = torch.cat(
-                        unpad(ts_power_ideal, ilens, length_dim=1), dim=0)
-                _ts = uts_power_ideal.log()
-                _upower = upower_mean.log()
-
-                loss = nmse_loss(_upower, _ts)
+                loss = mse_loss(_upower, _ts)
 
             # For evaluation as not differentiable
             elif loss_type == 'dnnwpe_stoi':
@@ -215,7 +202,7 @@ class LossCalculator(torch.nn.Module):
 
                 for _y, _t in zip(ys_time, ts_time):
                     # Single channel only
-                    _losses.append(stoi(_y, _t, self.stft_func.fs))
+                    _losses.append(stoi(_t, _y, self.stft_func.fs))
                 loss = torch.tensor(numpy.mean(_losses))
 
             # For evaluation as not differentiable
@@ -244,7 +231,7 @@ class LossCalculator(torch.nn.Module):
 
                     _t *= numpy.iinfo(numpy.int16).max - 1
                     _t = _t.astype(numpy.int16)
-                    fn = e.submit(calc_pesq, _y, _t, self.stft_func.fs)
+                    fn = e.submit(calc_pesq, _t, _y, self.stft_func.fs)
                     _fns.append(fn)
 
                 _losses = []
@@ -275,12 +262,12 @@ class LossCalculator(torch.nn.Module):
                 # PESQ via subprocess can be parallerize by threading
                 e = ThreadPoolExecutor(self.pesq_nworker)
                 for _x, _t in zip(xs_time, ts_time):
-                    _x *= numpy.iinfo(numpy.int16).max - 1
+                    _x = _x * numpy.iinfo(numpy.int16).max - 1
                     _x = _x.astype(numpy.int16)
 
-                    _t *= numpy.iinfo(numpy.int16).max - 1
+                    _t = _t * numpy.iinfo(numpy.int16).max - 1
                     _t = _t.astype(numpy.int16)
-                    fn = e.submit(calc_pesq, _x, _t, self.stft_func.fs)
+                    fn = e.submit(calc_pesq, _t, _x, self.stft_func.fs)
                     _fns.append(fn)
 
                 _losses = []
@@ -288,7 +275,6 @@ class LossCalculator(torch.nn.Module):
                     v = fn.result()
                     _losses.append(v)
 
-                # 3.199682502746582
                 loss = torch.tensor(numpy.mean(_losses))
 
             elif loss_type == 'wpe_pesq':
@@ -318,7 +304,7 @@ class LossCalculator(torch.nn.Module):
 
                     _t *= numpy.iinfo(numpy.int16).max - 1
                     _t = _t.astype(numpy.int16)
-                    fn = e.submit(calc_pesq, _y, _t, self.stft_func.fs)
+                    fn = e.submit(calc_pesq, _t, _y, self.stft_func.fs)
                     _fns.append(fn)
 
                 _losses = []
@@ -328,9 +314,11 @@ class LossCalculator(torch.nn.Module):
 
                 loss = torch.tensor(numpy.mean(_losses))
 
-            elif loss_type == 'wpe_nmse':
+            elif loss_type == 'wpe_mse':
                 # Note: No updated parameters existing
                 # 96328786.2853478
+                if uts is None:
+                    uts = FC.cat(unpad(ts, ilens, length_dim=2), dim=1)
                 with torch.no_grad():
                     # (B, C, T, F) -> (B, F, C, T)
                     _xs = xs.permute(0, 3, 1, 2)
@@ -339,9 +327,9 @@ class LossCalculator(torch.nn.Module):
                     _uys = FC.cat(unpad(_ys, ilens, length_dim=1), dim=0)
                     _ys = _uys.real ** 2 + _uys.imag ** 2
                     _ts = uts.real ** 2 + uts.imag ** 2
-                    # ys: (B, C, T, F) -> ys_mono: (B, T, F)
+                    _ts = _ts[ref_channel]
 
-                    loss = nmse_loss(_ys, _ts)
+                    loss = mse_loss(_ys, _ts)
 
             else:
                 raise NotImplementedError(f'loss_type={loss_type}')
@@ -360,11 +348,11 @@ def check_gradient(model: torch.nn.Module) -> bool:
 
 
 def train(loss_calculator: torch.nn.Module,
-          data_loader: DataLoader,
+          data_loader,
           optimizer: torch.optim.Optimizer,
           epoch: int,
           report_interval: int=1000,
-          loss_types: Union[str, Sequence[str]]='nmse',
+          loss_types: Union[str, Sequence[str]]='mse',
           ref_channel: int=0,
           loss_weight: Sequence[float]=1.0,
           grad_clip: float=None):
@@ -382,12 +370,12 @@ def train(loss_calculator: torch.nn.Module,
 
     loss_calculator.train()
     miss_count = 0
-    for ibatch, (_, xs, ts, ts2, ilens) in enumerate(data_loader):
+    for ibatch, (_, xs, ts, ilens) in enumerate(data_loader):
         # xs: (B, C, T, F), ts: (B, C, T, F), ilens: (B,)
 
         optimizer.zero_grad()
         try:
-            loss_dict = loss_calculator(xs, ts, ts2, ilens,
+            loss_dict = loss_calculator(xs, ts, ilens,
                                         loss_types=loss_types,
                                         ref_channel=ref_channel)
         except RuntimeError as e:
@@ -420,31 +408,30 @@ def train(loss_calculator: torch.nn.Module,
             global_logger.warning('The gradient is diverged. Skip updating.')
 
         if (ibatch + 1) % report_interval == 0:
-            reporter.report(f'Train {epoch}epoch '
-                            f'{ibatch + 1}/{len(data_loader)}: ',
+            reporter.report(f'Train {epoch}epoch {ibatch + 1}: ',
                             nhistory=report_interval - miss_count)
             miss_count = 0
 
 
 def test(loss_calculator: torch.nn.Module,
-         data_loader: DataLoader,
+         data_loader,
          epoch: int,
-         loss_types: Union[str, Sequence[str]]='nmse',
+         loss_types: Union[str, Sequence[str]]='mse',
          ref_channel: int=0):
     assert check_argument_types()
     reporter = Reporter()
 
     loss_calculator.eval()
-    for _, xs, ts, ts2, ilens in data_loader:
+    for _, xs, ts, ilens in data_loader:
         with torch.no_grad():
-            loss_dict = loss_calculator(xs, ts, ts2, ilens,
+            loss_dict = loss_calculator(xs, ts, ilens,
                                         loss_types=loss_types,
                                         ref_channel=ref_channel)
         for loss_type, loss in loss_dict.items():
             # Averaging between each gpu devices
             loss = loss.mean()
             reporter[loss_type] = loss.item()
-    reporter.report(f'Eval {epoch}epoch: {len(data_loader)}batch: ')
+    reporter.report(f'Eval {epoch}epoch: : ')
 
     return reporter
 
@@ -465,14 +452,15 @@ def config():
     """
     # Output directory
     workdir = 'exp'
+    model_file = None
+    optimizer_file = None
+    start_epoch = 1
 
     # Input files
     train_scp = 'data/train/wav_rir_noise.scp'
-    train_t_h5 = 'data/train/target.h5'
     train_nframes = 'data/train/utt2nframes'
 
     test_scp = 'data/dev/wav_rir_noise.scp'
-    test_t_h5 = 'data/dev/target.h5'
 
     stft_conf = './stft.json'
 
@@ -481,18 +469,20 @@ def config():
     seed = 0
     # None indicates using all visible devices
     ngpu = None
-    batch_size = 32
-    nepoch = 100
+    batch_size = 16
+    nepoch = 30
     report_interval = 100
     resume = None
 
     # 'SGD', 'Adam'
     opt_type = 'SGD'
-    opt_config = {'lr': 0.2}
+    opt_config = {'lr': 0.2,
+                  # 'weight_decay': 0.0001,
+                  # 'momentum': 0.9
+                  }
 
-    # loss_type = ['power_nmse', 'dnnwpe_nmse']
-    loss_type = 'ideal_power_nmse'
-    eval_type = ['dnnwpe_power_nmse', 'power_nmse', 'dnnwpe_pesq']
+    loss_type = ['power_mse']
+    eval_type = ['power_mse', 'dnnwpe_mse']
     loss_weight = [1.]
     grad_clip = 5.
     # The reference channel used for loss calculation
@@ -500,7 +490,21 @@ def config():
 
     model_config = {'feat_type': 'log_power',
                     'out_type': 'mask',
-                    'model_type': 'blstm'}
+                    'model_type': 'lstm',
+                    'num_layers': 2,
+                    'hidden_size': 300,
+                    }
+    delay = 0
+    uttlevel = True
+    width = 100
+    lcontext = 0
+    rcontext = 0
+    if uttlevel:
+        width = None
+        lcontext = 0
+        rcontext = 0
+
+    norm_scale = True
 
     Path(workdir).mkdir(parents=True, exist_ok=True)
     observer = FileStorageObserver.create(str(Path(workdir) / 'config'))
@@ -514,10 +518,8 @@ def main(seed: int,
          batch_size: int,
          workdir: str,
          train_scp: str,
-         train_t_h5: str,
          train_nframes: str,
          test_scp: str,
-         test_t_h5: str,
          stft_conf: str,
          opt_type: str,
          opt_config: dict,
@@ -529,7 +531,17 @@ def main(seed: int,
          ref_channel: int,
          nworker: int,
          grad_clip: float,
-         model_config: dict):
+         model_config: dict,
+         uttlevel: bool,
+         width: Optional[int],
+         lcontext: int,
+         rcontext: int,
+         model_file: Optional[str],
+         optimizer_file: Optional[str],
+         delay: int = 0,
+         norm_scale: bool = True,
+         start_epoch: int = 1,
+         ):
     global_logger.info(get_commandline_args())
     assert check_argument_types()
     random.seed(seed)
@@ -541,41 +553,59 @@ def main(seed: int,
     global_logger.info(f'NGPU: {ngpu}, NWORKER={nworker}, '
                        f'HOST={os.uname()[1]}')
 
-    # _collate_fn = CollateFuncWithDevice(device, collate_fn)
-    _collate_fn = collate_fn
+    if uttlevel:
+        _batch_size = batch_size
+    else:
+        _batch_size = 1
 
     train_loader = DataLoader(
-        dataset=WavRIRNoiseDataset(train_scp,
-                                   stft_conf=stft_conf, t_h5=train_t_h5),
-        batch_sampler=DescendingOrderedBatchSampler(batch_size=batch_size,
+        dataset=WavRIRNoiseDataset(train_scp, stft_conf=stft_conf,
+                                   delay=delay, norm_scale=norm_scale),
+        batch_sampler=DescendingOrderedBatchSampler(batch_size=_batch_size,
                                                     shuffle=True,
                                                     nframes=train_nframes),
         num_workers=nworker,
-        collate_fn=_collate_fn)
+        collate_fn=collate_fn)
 
-    # test_loader = DataLoader(
-    #     dataset=WavRIRNoiseDataset(test_scp,
-    #                                stft_conf=stft_conf, t_h5=test_t_h5),
-    #     batch_size=batch_size,
-    #     num_workers=nworker,
-    #     collate_fn=_collate_fn)
     test_loader = DataLoader(
-        dataset=ScpScpDataset('data/SimData_dt_for_8ch_near_room3/reverb.scp',
-                              'data/SimData_dt_for_8ch_near_room3/clean.scp',
-                              stft_conf=stft_conf),
-        shuffle=False,
-        batch_size=batch_size,
+        dataset=WavRIRNoiseDataset(test_scp, stft_conf=stft_conf,
+                                   delay=delay, norm_scale=norm_scale),
+        batch_size=1,
         num_workers=nworker,
-        collate_fn=_collate_fn)
+        collate_fn=collate_fn)
+
+    if not uttlevel:
+        train_loader = Chunk(train_loader, batch_size=batch_size,
+                             width=width, rcontext=rcontext, lcontext=lcontext)
 
     # MyDataParallel can handle "ComplexTensor"
+    input_size = json.load(open(stft_conf))['nfft'] // 2 + 1
+
+    model_config.update(input_size=input_size * (1 + lcontext + rcontext),
+                        out_size=input_size,
+                        rcontext=rcontext,
+                        lcontext=lcontext)
+
     model = DNN_WPE(**model_config)
+
+    with open(f'{workdir}/model_args.json', 'w') as f:
+        model_config.update(width=width, norm_scale=norm_scale)
+        json.dump(model_config, f, indent=4)
+
+    if model_file is not None:
+        model.load_state_dict(torch.load(model_file))
+
     loss_calculator = MyDataParallel(
-        LossCalculator(model, stft_conf=stft_conf, pesq_nworker=nworker),
+        LossCalculator(model, stft_conf=stft_conf, pesq_nworker=nworker,
+                       rcontext=rcontext, lcontext=lcontext,
+                       ),
         device_ids=list(range(ngpu)))
 
     OptimzerClass = getattr(torch.optim, opt_type)
     optimizer = OptimzerClass(model.parameters(), **opt_config)
+    if optimizer_file is not None:
+        optimizer.load_state_dict(torch.load(optimizer_file))
+
     global_logger.info(model)
     global_logger.info(optimizer)
 
@@ -584,15 +614,14 @@ def main(seed: int,
         initial_lr = param_group['lr']
 
     elapsed = {}
-    if False:
+    if True:
         prev_reporter = None
     else:
         prev_reporter = test(
             loss_calculator, test_loader, epoch=0,
-            # loss_types=eval_type,
-            loss_types=['unprocessed_pesq'],
+            loss_types=['dnnwpe_mse'],
             ref_channel=ref_channel)
-    for epoch in range(1, nepoch + 1):
+    for epoch in range(start_epoch, nepoch + 1):
         global_logger.info(f'Start {epoch}/{nepoch} epoch')
         t = time.perf_counter()
 
@@ -609,7 +638,11 @@ def main(seed: int,
             ref_channel=ref_channel)
 
         if prev_reporter is not None:
-            diff = reporter.value(loss_type) - prev_reporter.value(loss_type)
+            if isinstance(loss_type, str):
+                _loss_type = loss_type
+            else:
+                _loss_type = loss_type[0]
+            diff = reporter.value(_loss_type) - prev_reporter.value(_loss_type)
             if diff > 0.:
                 global_logger.info('Not improved, Reduce lr')
                 for param_group in optimizer.param_groups:
@@ -628,6 +661,6 @@ def main(seed: int,
                            f'Expected remaining time: {expect}')
 
         for param_group in optimizer.param_groups:
-            if param_group['lr'] < initial_lr / 2 ** 10:
+            if param_group['lr'] < initial_lr / 2 ** 15:
                 global_logger.info('Threshold!')
                 return

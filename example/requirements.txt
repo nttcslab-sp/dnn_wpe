@@ -1,3 +1,4 @@
+nara_wpe
 numpy
 scipy
 soundfile
@@ -5,3 +6,5 @@ sacred
 typeguard
 humanfriendly
 pystoi
+h5py
+nara_wpe
