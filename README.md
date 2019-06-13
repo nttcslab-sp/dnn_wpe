@@ -19,7 +19,7 @@ pip install git+https://github.com/kamo-naoyuki/pytorch_complex
 pip install ${REPOSITORY_ROOT}
 ```
 
-## Example
+## Example of DNN training
 ```bash
 cd example
 ./prepare_REVERB_data.sh <wsjcam0> <REVERB_DATA_OFFICIAL>
