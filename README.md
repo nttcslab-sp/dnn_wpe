@@ -24,6 +24,7 @@ pip install git+https://github.com/nttcslab-sp/dnn_wpe
 ## Example of DNN training
 ```bash
 cd example
+pip install -r requirements.txt
 ./prepare_REVERB_data.sh <wsjcam0> <REVERB_DATA_OFFICIAL>
 source env.sh
 ./train.py
