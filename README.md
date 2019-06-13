@@ -19,8 +19,7 @@ pip install git+https://github.com/kamo-naoyuki/pytorch_complex
 pip install ${REPOSITORY_ROOT}
 ```
 
-## Examples
-
+## Example
 ```bash
 cd example
 ./prepare_REVERB_data.sh <wsjcam0> <REVERB_DATA_OFFICIAL>
